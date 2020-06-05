@@ -27,14 +27,20 @@ class vaaac {
 		cv::Rect reticleBounds;
 		cv::Rect dynamicSearchBounds;
 		cv::Mat frame;
+		cv::Mat mask;
+		cv::Mat conversionTable;
 
 		// standard containers
 		std::vector<std::pair<int, int>> bfsOffsets;
 
+		// quality / accuracy
+		int bfsSampleSize;
+
 		// resolution (square)
 		int width;
 		int height;
-		int minRes;
+		int res;
+		int halfRes;
 
 		// skin tone hsv color bounds
 		int hLow;
