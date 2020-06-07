@@ -54,10 +54,6 @@ vaaac::vaaac() {
 vaaac::~vaaac() {
 }
 
-void vaaac::cst() {
-
-}
-
 void vaaac::calibrateSkinTone() {
 	if (ok & 1) {
 		int xCoord = width / 2 - SAMPLE_AREA_WIDTH / 2;
