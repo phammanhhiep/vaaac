@@ -7,12 +7,18 @@
 
 #include "vaaac.h"
 
-vaaac::vaaac() : ok(false) {
+vaaac::vaaac() {
+	// webcam initialization
 	videoCapture = cv::VideoCapture(0);
 	videoCapture.set(cv::CAP_PROP_SETTINGS, 1);
-	if (!videoCapture.isOpened()) {
+	// check if it's alright
+	ok = videoCapture.isOpened();
+	if (!ok) {
+		std::cout << "[-] Couldn't initialize webcam video recording.\n";
+		ok = false;
 		return;
 	}
+	// resolution (1:1 aspect ratio)
 	width = videoCapture.get(cv::CAP_PROP_FRAME_WIDTH);
 	height = videoCapture.get(cv::CAP_PROP_FRAME_HEIGHT);
 	res = std::min(width, height);
@@ -27,62 +33,87 @@ vaaac::vaaac() : ok(false) {
 	// limit camera resolution ratio to 1:1
 	frameBounds = cv::Rect(addX, addY, res, res);
 	// determine reticle view area
-	int reticleSize = 30;
-	int reticlePos = halfRes - reticleSize / 2;
-	reticleBounds = cv::Rect(reticlePos, reticlePos, reticleSize, reticleSize);
-	// determine bfs sample size. this represents the size of
-	// the scanned area for each node of the bfs algorithm.
-	// the lower this value, the more accurate but the more noise.
-	bfsSampleSize = 5;
-	// fill up breadth first search array
+	int reticlePos = halfRes - RETICLE_SIZE / 2;
+	reticleBounds = cv::Rect(reticlePos, reticlePos, RETICLE_SIZE, RETICLE_SIZE);
+	// fill up bfs offsets array
 	bfsOffsets.clear();
 	for (int i = -1; i < 2; ++i) {
 		for (int j = -1; j < 2; ++j) {
-			bfsOffsets.push_back(std::make_pair<int, int>(i * bfsSampleSize,j * bfsSampleSize));
+			bfsOffsets.push_back(std::make_pair<int, int>(i * BFS_SAMPLE_SIZE,j * BFS_SAMPLE_SIZE));
 		}
 	}
-	// color conversion table used to change mask's white color to red 
-	conversionTable = cv::Mat(1, 256, CV_8UC3);
-	for (int i = 0; i < 255; ++i) {
-		conversionTable.at<cv::Vec3b>(0, i) = cv::Vec3b(0, 0, 0);
-	}
-	conversionTable.at<cv::Vec3b>(0, 255) = cv::Vec3b(255, 0, 0);
+	// it's bad to compute this too much
+	halfTriggerQueueSize = TRIGGER_QUEUE_SIZE / 2;
+	// compute trigger vars in pixels
+	TRIGGER_MINIMUM_DISTANCE_PIXELS = TRIGGER_MINIMUM_DISTANCE * res / 100.0;
+	TRIGGER_ALLOWED_DEVIATION_PIXELS = TRIGGER_ALLOWED_DEVIATION * res / 100.0;
+	// clear y variance array
+	yDelta.clear();
 }
 
 vaaac::~vaaac() {
 }
 
+void vaaac::cst() {
+
+}
+
 void vaaac::calibrateSkinTone() {
-	int xCoord = width / 2 - 20;
-	int yCoord = height / 2 - 20;
-	int rectSizeX = std::min(40, halfRes);
-	int rectSizeY = std::min(40, halfRes);
-	cv::Rect area(xCoord, yCoord, rectSizeX, rectSizeY);
-	for (;;) {
-		videoCapture >> frame;
-		cv::rectangle(frame, area, cv::Scalar(255, 0, 0));
-		cv::imshow("skintone", frame);
-		int key = cv::waitKey(1);
-		if (key == 27) {
-			break;
+	if (ok & 1) {
+		int xCoord = width / 2 - SAMPLE_AREA_WIDTH / 2;
+		int yCoord = height / 2 - SAMPLE_AREA_HEIGHT / 2;
+		int rectSizeX = std::min(SAMPLE_AREA_WIDTH, halfRes);
+		int rectSizeY = std::min(SAMPLE_AREA_HEIGHT, halfRes);
+		cv::Rect area(xCoord, yCoord, rectSizeX, rectSizeY);
+		for (;;) {
+			videoCapture >> frame;
+			if (RENDER_SAMPLE_TEXT) {
+				cv::putText(
+						frame, 
+						"fill the area with your skin.", 
+						cv::Point(10 , area.y - 70),
+						cv::FONT_HERSHEY_DUPLEX,
+						1.0,
+						cv::Scalar(255, 255, 0),
+						1);
+				cv::putText(
+						frame, 
+						"then press any key.", 
+						cv::Point(10 , area.y - 40),
+						cv::FONT_HERSHEY_DUPLEX,
+						1.0,
+						cv::Scalar(255, 255, 0),
+						1);
+			}
+			cv::rectangle(frame, area, cv::Scalar(255, 0, 0));
+			cv::imshow("skintone", frame);
+			int key = cv::waitKey(1);
+			if (key != -1) {
+				break;
+			}
 		}
+		cv::Mat hsv;
+		cv::cvtColor(frame, hsv, cv::COLOR_BGR2HSV);
+		cv::Mat sample(hsv, area);
+		cv::Scalar mean = cv::mean(sample);
+		hLow = mean[0] - MASK_LOW_TOLERANCE;
+		hHigh = mean[0] + MASK_HIGH_TOLERANCE;
+		sLow = mean[1] - MASK_LOW_TOLERANCE;
+		sHigh = mean[1] + MASK_HIGH_TOLERANCE;
+		vLow = 0;
+		vHigh = 255;
+		ok = 2;
 	}
-	cv::Mat hsv;
-	cv::cvtColor(frame, hsv, cv::COLOR_BGR2HSV);
-	cv::Mat sample(hsv, area);
-	cv::Scalar mean = cv::mean(sample);
-	int offsetLow = 50;
-	int offsetHigh = 25;
-	hLow = mean[0] - offsetLow;
-	hHigh = mean[0] + offsetHigh;
-	sLow = mean[1] - offsetLow;
-	sHigh = mean[1] + offsetHigh;
-	vLow = 0;
-	vHigh = 255;
-	ok = true;
 }
 
 void vaaac::update() {
+
+	//                                    //
+	//-- i m a g e  p r o c e s s i n g --//
+	//                                    //
+
+	// always false before processing
+	triggered = false;
 	// get current frame
 	videoCapture >> frame;
 	// reshape
@@ -95,68 +126,138 @@ void vaaac::update() {
 	cv::Mat structuringElement = cv::getStructuringElement(cv::MORPH_ELLIPSE, {3, 3});
 	cv::morphologyEx(mask, mask, cv::MORPH_OPEN, structuringElement);
 	cv::dilate(mask, mask, cv::Mat(), {-1, -1}, 1);
-	// find object union at center and clear rest of image
-	int minX = reticleBounds.x;
-	int minY = reticleBounds.y;
-	int maxX = reticleBounds.x + reticleBounds.width;
-	int maxY = reticleBounds.y + reticleBounds.height;
-	int circleX = halfRes;
-	int circleY = halfRes;
-	int dist = 0;
+	/*
+	 * check existance of object within
+	 * the reticle area's
+	 */
+	int xMin = reticleBounds.x;
+	int yMin = reticleBounds.y;
+	int xMax = reticleBounds.x + reticleBounds.width;
+	int yMax = reticleBounds.y + reticleBounds.height;
+	int xAim = halfRes;
+	int yAim = halfRes;
+	xAngle = -1.0;
+	yAngle = -1.0;
 	if (cv::mean(mask(reticleBounds))[0] > 0) {
 		bool visited[res + 1][res + 1];
 		memset(visited, 0, sizeof(visited));
 		std::queue<std::pair<int, int>> q;
-		for (auto& offset : bfsOffsets) {
-			int x = halfRes + offset.first, y = halfRes + offset.second;
-			q.push({x, y});
-			visited[x][y];
+		for (int i = halfRes - RETICLE_SIZE / 2; i <= halfRes + RETICLE_SIZE / 2; i += BFS_SAMPLE_SIZE) {
+			for (int j = halfRes - RETICLE_SIZE / 2; j <= halfRes + RETICLE_SIZE / 2; j += BFS_SAMPLE_SIZE) {
+				for (auto& offset : bfsOffsets) {
+					int x = i + offset.first, y = j + offset.second;
+					if (visited[x][y]) {
+						continue;
+					}
+					q.push({x, y});
+					visited[x][y];
+				}
+			}
 		}
-		while (!q.empty()) {
+		memset(visited, 0, sizeof(visited));
+		for (; !q.empty(); ) {
 			std::pair<int, int> xy = q.front();
 			int x = xy.first, y = xy.second;
 			q.pop();
-			if (visited[x][y] || x < 0 || y < 0 || x + bfsSampleSize > res || y + bfsSampleSize > res) continue; 
+			if (visited[x][y] || x < 0 || y < 0 || x + BFS_SAMPLE_SIZE > res || y + BFS_SAMPLE_SIZE > res) continue; 
 			visited[x][y] = true;
-			if (cv::mean(mask(cv::Rect(x, y, bfsSampleSize, bfsSampleSize)))[0] == 0) continue;
-			int oriDist = std::abs(halfRes - x) + std::abs(halfRes - y);
-			if (oriDist > dist) {
-				circleX = x;
-				circleY = y;
-				dist = oriDist;
-			}
-			minX = std::min(minX, x);
-			minY = std::min(minY, y);
-			maxX = std::max(maxX, x);
-			maxY = std::max(maxY, y);
+			if (cv::mean(mask(cv::Rect(x, y, BFS_SAMPLE_SIZE, BFS_SAMPLE_SIZE)))[0] == 0) continue;
+			/*
+			 * update furthermost point coordinates.
+			 * works because the bfs algorithm always
+			 * visits the furthermost element in the
+			 * last place
+			 */
+			xAim = x;
+			yAim = y;
+			// update found object area bounds
+			xMin = std::min(xMin, x);
+			yMin = std::min(yMin, y);
+			xMax = std::max(xMax, x);
+			yMax = std::max(yMax, y);
+			// add neighbors to queue
 			for (auto& offset : bfsOffsets) {
 				q.push(std::make_pair<int, int>(x + offset.first, y + offset.second));
 			}
 		}
-		// draw circle indicating furthermost point from origin
-		cv::circle(mask, cv::Point(circleX, circleY), 5, cv::Scalar(255, 255, 255), 2);
-		// draw object boundaries
-		cv::rectangle(mask, cv::Rect(minX, minY, maxX - minX, maxY - minY), cv::Scalar(255, 255, 255), 5);
-		// cut out everything out of the object boundaries inside the mask
-		mask(cv::Rect(0, 0, minX, res)).setTo(cv::Scalar(0));
-		mask(cv::Rect(minX, 0, res - minX, minY)).setTo(cv::Scalar(0));
-		mask(cv::Rect(minX, maxY, res - minX, height - maxY)).setTo(cv::Scalar(0));
-		mask(cv::Rect(maxX, minY, res - maxX, maxY - minY)).setTo(cv::Scalar(0));
+		// make angles
+		yAngle = (double)(halfRes - yAim) / halfRes * 90.0;
+		xAngle = (double)(halfRes - xAim) / halfRes * 90.0;
+		/*
+		 * check if there's a clear peak in
+		 * the y variance
+		 */
+		if (yDelta.size() < TRIGGER_QUEUE_SIZE) {
+			yDelta.push_back(yAngle);
+		} else {
+			yDelta.pop_front();
+			yDelta.push_back(yAngle);
+			bool ok = true;
+			int peak = yDelta[halfTriggerQueueSize], left = -100, right = -100;
+			for (int j = 0; j < halfTriggerQueueSize && ok; ++j) {
+				int current = yDelta[j];
+				if (peak - current >= TRIGGER_MINIMUM_DISTANCE_PIXELS) {
+					left = current;
+					break;
+				}
+				if (current > peak) {
+					ok = false;
+				}
+			}
+			for (int j = halfTriggerQueueSize + 1; j < TRIGGER_QUEUE_SIZE && ok; ++j) {
+				int current = yDelta[j];
+				if (peak - current >= TRIGGER_MINIMUM_DISTANCE_PIXELS) {
+					right = current;
+					break;
+				}
+				if (current > peak) {
+					ok = false;
+				}
+			}
+			if (ok && left != -100 && right != -100) {
+				if (std::abs(left - right) <= TRIGGER_ALLOWED_DEVIATION_PIXELS) {
+					triggered = true;
+					// false positives show up otherwise
+					yDelta.clear();
+				}
+			}
+		}
 	} else {
-		// draw reticle area bounds
-		cv::rectangle(mask, reticleBounds, cv::Scalar(255, 0, 0), 2);
+		// clear y variance deque
+		yDelta.clear();
 	}
-	// draw to screen
-	cv::Mat out;
-	cv::cvtColor(mask, mask, cv::COLOR_GRAY2RGB);
-	//cv::LUT(mask, conversionTable, mask);
-	cv::addWeighted(mask, 0.5, frame, 1.0, 0.0, out);	
-	cv::imshow("out", out);
 
-	// user input
-	int key = cv::waitKey(1);
-	if (key == 27) {
-		ok = false;
-		return;
+	//                                   //
+	//-------- r e n d e r i n g --------//
+	//                                   //
+
+	if (RENDER_TO_FRAME) {
+		/*
+		 * cut out everything outside of the 
+		 * object boundaries
+		 */
+		mask(cv::Rect(0, 0, xMin, res)).setTo(cv::Scalar(0));
+		mask(cv::Rect(xMin, 0, res - xMin, yMin)).setTo(cv::Scalar(0));
+		mask(cv::Rect(xMin, yMax, res - xMin, height - yMax)).setTo(cv::Scalar(0));
+		mask(cv::Rect(xMax, yMin, res - xMax, yMax - yMin)).setTo(cv::Scalar(0));
+		/*
+		 * draw rectangle indicating either
+		 * the reticle bounds or
+		 * the found object boundaries'
+		 */
+		cv::rectangle(mask, cv::Rect(xMin, yMin, xMax - xMin, yMax - yMin), cv::Scalar(255, 255, 255), 2);
+		/*
+		 * draw circle indicating furthermost
+		 * point from origin
+		 */
+		cv::circle(frame, cv::Point(xAim, yAim), 5, cv::Scalar(255, 0, 255), 2);
+		// convert mask to three channel
+		cv::cvtColor(mask, mask, cv::COLOR_GRAY2RGB);
+		// mix frame with mask
+		cv::addWeighted(mask, 0.5, frame, 1.0, 0.0, frame);
+		// present final image
+		if (RENDER_TO_WINDOW) {
+			cv::imshow("frame", frame);
+		}
 	}
 }

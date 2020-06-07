@@ -1,8 +1,8 @@
 CC = g++ -g
-CCFLAGS = -o vaaac 
+CCFLAGS = -o vaaac -I./
 
-vaaac: usageExample.cpp vaaac.cpp
-	$(CC) $(CCFLAGS) -I/usr/include/opencv4/ usageExample.cpp vaaac.cpp -lopencv_core -lopencv_highgui -lopencv_videoio -lopencv_imgproc -lopencv_objdetect
+vaaac: example/usageExample.cpp vaaac.cpp
+	$(CC) $(CCFLAGS) -I/usr/include/opencv4/ example/usageExample.cpp vaaac.cpp -lopencv_core -lopencv_highgui -lopencv_videoio -lopencv_imgproc -lopencv_objdetect
 
 clean:
 	rm vaaac
