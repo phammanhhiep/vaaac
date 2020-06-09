@@ -26,7 +26,8 @@ vaaac::vaaac() {
 	int addX = 0, addY = 0;
 	if (width > height) {
 		addX = (width - height) / 2;
-	} else if (height > width) {
+	}
+	else if (height > width) {
 		addY = (height - width) / 2;
 	}
 	// limit camera resolution ratio to 1:1
@@ -34,11 +35,14 @@ vaaac::vaaac() {
 	// determine reticle view area
 	int reticlePos = halfRes - RETICLE_SIZE / 2;
 	reticleBounds = cv::Rect(reticlePos, reticlePos, RETICLE_SIZE, RETICLE_SIZE);
+	// determine no aim zone
+	int noAimAreaPos = halfRes - NO_AIM_AREA_SIZE / 2;
+	noAimAreaBounds = cv::Rect(noAimAreaPos, noAimAreaPos, NO_AIM_AREA_SIZE, NO_AIM_AREA_SIZE);
 	// fill up bfs offsets array
 	bfsOffsets.clear();
 	for (int i = -1; i < 2; ++i) {
 		for (int j = -1; j < 2; ++j) {
-			bfsOffsets.push_back(std::make_pair<int, int>(i * BFS_SAMPLE_SIZE,j * BFS_SAMPLE_SIZE));
+			bfsOffsets.push_back(std::make_pair<int, int>(i * BFS_SAMPLE_SIZE, j * BFS_SAMPLE_SIZE));
 		}
 	}
 	// precompute trigger system constants
@@ -65,21 +69,21 @@ void vaaac::calibrateSkinTone() {
 			frame = frame(frameBounds);
 			if (RENDER_SAMPLE_TEXT) {
 				cv::putText(
-						frame, 
-						"fill the area with your skin.", 
-						cv::Point(10 , area.y - 60),
-						cv::FONT_HERSHEY_DUPLEX,
-						1.0,
-						cv::Scalar(255, 255, 255),
-						1);
+					frame,
+					"fill the area with your skin.",
+					cv::Point(10, area.y - 60),
+					cv::FONT_HERSHEY_DUPLEX,
+					1.0,
+					cv::Scalar(255, 255, 255),
+					1);
 				cv::putText(
-						frame, 
-						"then press any key.", 
-						cv::Point(10 , area.y - 20),
-						cv::FONT_HERSHEY_DUPLEX,
-						1.0,
-						cv::Scalar(255, 255, 255),
-						1);
+					frame,
+					"then press any key.",
+					cv::Point(10, area.y - 20),
+					cv::FONT_HERSHEY_DUPLEX,
+					1.0,
+					cv::Scalar(255, 255, 255),
+					1);
 			}
 			/*
 			 * check if user is done before
@@ -131,9 +135,9 @@ void vaaac::update() {
 	// binarization
 	cv::inRange(mask, cv::Scalar(hLow, sLow, vLow), cv::Scalar(hHigh, sHigh, vHigh), mask);
 	// noise reduction
-	cv::Mat structuringElement = cv::getStructuringElement(cv::MORPH_ELLIPSE, {3, 3});
+	cv::Mat structuringElement = cv::getStructuringElement(cv::MORPH_ELLIPSE, { 3, 3 });
 	cv::morphologyEx(mask, mask, cv::MORPH_OPEN, structuringElement);
-	cv::dilate(mask, mask, cv::Mat(), {-1, -1}, 1);
+	cv::dilate(mask, mask, cv::Mat(), { -1, -1 }, 1);
 	/*
 	 * check existance of object within
 	 * the reticle area's
@@ -144,30 +148,27 @@ void vaaac::update() {
 	int yMax = reticleBounds.y + reticleBounds.height;
 	int xAim = halfRes;
 	int yAim = halfRes;
-	xAngle = -1.0;
-	yAngle = -1.0;
+	xAngle = -100.0;
+	yAngle = -100.0;
 	if (cv::mean(mask(reticleBounds))[0] > 0) {
-		bool visited[res + 1][res + 1];
-		memset(visited, 0, sizeof(visited));
+		std::vector<std::vector<bool>> visited(res + 1, std::vector<bool>(res + 1, false));
 		std::queue<std::pair<int, int>> q;
 		for (int i = halfRes - RETICLE_SIZE / 2; i <= halfRes + RETICLE_SIZE / 2; i += BFS_SAMPLE_SIZE) {
 			for (int j = halfRes - RETICLE_SIZE / 2; j <= halfRes + RETICLE_SIZE / 2; j += BFS_SAMPLE_SIZE) {
 				for (auto& offset : bfsOffsets) {
-					int x = i + offset.first, y = j + offset.second;
-					if (visited[x][y]) {
+					if (offset.first < 0 || offset.second < 0) {
 						continue;
 					}
-					q.push({x, y});
-					visited[x][y];
+					int x = i + offset.first, y = j + offset.second;
+					q.push({ x, y });
 				}
 			}
 		}
-		memset(visited, 0, sizeof(visited));
 		for (; !q.empty(); ) {
 			std::pair<int, int> xy = q.front();
 			int x = xy.first, y = xy.second;
 			q.pop();
-			if (visited[x][y] || x < 0 || y < 0 || x + BFS_SAMPLE_SIZE > res || y + BFS_SAMPLE_SIZE > res) continue; 
+			if (x < 0 || y < 0 || x + BFS_SAMPLE_SIZE > res || y + BFS_SAMPLE_SIZE > res || visited[x][y]) continue;
 			visited[x][y] = true;
 			if (cv::mean(mask(cv::Rect(x, y, BFS_SAMPLE_SIZE, BFS_SAMPLE_SIZE)))[0] == 0) continue;
 			/*
@@ -188,25 +189,38 @@ void vaaac::update() {
 				q.push(std::make_pair<int, int>(x + offset.first, y + offset.second));
 			}
 		}
+		/*
+		 * check if aim point falls within
+		 * the no aim area boundaries.
+		 * set angles to zero if that's the
+		 * case
+		 */
+		if (noAimAreaBounds.contains(cv::Point(xAim, yAim))) {
+			yAim = halfRes;
+			xAim = halfRes;
+		}
 		// make angles
-		yAngle = (double)(halfRes - yAim) / halfRes * 90.0;
-		xAngle = (double)(halfRes - xAim) / halfRes * 90.0;
+		yAngle = -(double)(halfRes - yAim) / halfRes * 90.0;
+		xAngle = -(double)(halfRes - xAim) / halfRes * 90.0;
+		yAngleSmooth += (yAngle - yAngleSmooth) / (double)(AIM_SMOOTHNESS);
+		xAngleSmooth += (xAngle - xAngleSmooth) / (double)(AIM_SMOOTHNESS);
 		/*
 		 * check if there's a clear peak in
 		 * the y variance
 		 */
 		if (yDelta.size() < TRIGGER_QUEUE_SIZE) {
-			yDelta.push_back({yAngle, xAngle});
-		} else {
+			yDelta.push_back({ yAim, xAim });
+		}
+		else {
 			yDelta.pop_front();
-			yDelta.push_back({yAngle, xAngle});
+			yDelta.push_back({ yAim, xAim });
 			bool ok = true;
 			int peak = yDelta[TRIGGER_HALF_QUEUE_SIZE].first;
 			std::pair<int, int> left(-100, -100);
 			std::pair<int, int> right(-100, -100);
 			for (int j = 0; j < TRIGGER_HALF_QUEUE_SIZE && ok; ++j) {
 				std::pair<int, int> current = yDelta[j];
-				if (peak - current.first >= TRIGGER_MINIMUM_DISTANCE_PIXELS) {
+				if (peak - current.first <= -TRIGGER_MINIMUM_DISTANCE_PIXELS) {
 					left = current;
 					break;
 				}
@@ -216,7 +230,7 @@ void vaaac::update() {
 			}
 			for (int j = TRIGGER_HALF_QUEUE_SIZE + 1; j < TRIGGER_QUEUE_SIZE && ok; ++j) {
 				std::pair<int, int> current = yDelta[j];
-				if (peak - current.first >= TRIGGER_MINIMUM_DISTANCE_PIXELS) {
+				if (peak - current.first <= -TRIGGER_MINIMUM_DISTANCE_PIXELS) {
 					right = current;
 					break;
 				}
@@ -237,7 +251,8 @@ void vaaac::update() {
 				}
 			}
 		}
-	} else {
+	}
+	else {
 		// clear y variance deque
 		yDelta.clear();
 	}
@@ -248,7 +263,7 @@ void vaaac::update() {
 
 	if (RENDER_TO_FRAME) {
 		/*
-		 * cut out everything outside of the 
+		 * cut out everything outside of the
 		 * object boundaries
 		 */
 		mask(cv::Rect(0, 0, xMin, res)).setTo(cv::Scalar(0));
