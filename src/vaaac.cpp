@@ -46,12 +46,14 @@ vaaac::vaaac() {
 		}
 	}
 	// precompute trigger system constants
-	TRIGGER_HALF_QUEUE_SIZE = TRIGGER_QUEUE_SIZE / 2;
 	TRIGGER_MINIMUM_DISTANCE_PIXELS = TRIGGER_MINIMUM_DISTANCE * res / 100.0;
+	TRIGGER_MAXIMUM_DISTANCE_PIXELS = TRIGGER_MAXIMUM_DISTANCE * res / 100.0;
 	TRIGGER_ALLOWED_Y_DEVIATION_PIXELS = TRIGGER_ALLOWED_Y_DEVIATION * res / 100.0;
 	TRIGGER_ALLOWED_X_DEVIATION_PIXELS = TRIGGER_ALLOWED_X_DEVIATION * res / 100.0;
 	// clear y variance deque
-	yDelta.clear();
+	increment = true;
+	yxDeltaSize = 0;
+	yxDelta.clear();
 }
 
 vaaac::~vaaac() {
@@ -125,6 +127,7 @@ void vaaac::update() {
 	//                                    //
 
 	// always false before processing
+	detected = false;
 	triggered = false;
 	// get current frame
 	videoCapture >> frame;
@@ -151,6 +154,7 @@ void vaaac::update() {
 	xAngle = -100.0;
 	yAngle = -100.0;
 	if (cv::mean(mask(reticleBounds))[0] > 0) {
+		detected = true;
 		std::vector<std::vector<bool>> visited(res + 1, std::vector<bool>(res + 1, false));
 		std::queue<std::pair<int, int>> q;
 		for (int i = halfRes - RETICLE_SIZE / 2; i <= halfRes + RETICLE_SIZE / 2; i += BFS_SAMPLE_SIZE) {
@@ -199,70 +203,51 @@ void vaaac::update() {
 			yAim = halfRes;
 			xAim = halfRes;
 		}
+		/*
+		 * check if there's a clear peak in
+		 * the y variance
+		 */
+		if (!yxDeltaSize) {
+			yxDelta.push_back({ yAim, xAim });
+			yxDeltaSize = 1;
+		} else if (increment) {
+			if (yAim <= yxDelta[yxDeltaSize - 1].first) {
+				++yxDeltaSize;
+				yxDelta.push_back({ yAim, xAim });
+			} else {
+				int yDelta = yxDelta[0].first - yxDelta[yxDeltaSize - 1].first;
+				if (yDelta >= TRIGGER_MINIMUM_DISTANCE_PIXELS && yDelta <= TRIGGER_MAXIMUM_DISTANCE_PIXELS) {
+					increment = false;
+				} else {
+					yxDeltaSize = 0;
+					yxDelta.clear();
+				}
+			}
+		} else {
+			if (yAim >= yxDelta[yxDeltaSize - 1].first) {
+				yxDelta.push_back({ yAim, xAim });
+				++yxDeltaSize;
+			} else {
+				std::pair<int, int> left = yxDelta[0];
+				std::pair<int, int> right = yxDelta[yxDeltaSize - 1];
+				bool ok = true;
+				ok &= std::abs(left.first - right.first) <= TRIGGER_ALLOWED_Y_DEVIATION_PIXELS;
+				ok &= std::abs(left.second - right.second) <= TRIGGER_ALLOWED_X_DEVIATION_PIXELS;
+				if (ok) {
+					triggered = true;
+					yAim = left.first;
+					xAim = left.second;
+				}
+				increment = true;
+				yxDelta.clear();
+			}
+		}
 		// make angles
 		yAngle = -(double)(halfRes - yAim) / halfRes * 90.0;
 		xAngle = -(double)(halfRes - xAim) / halfRes * 90.0;
 		yAngleSmooth += (yAngle - yAngleSmooth) / (double)(AIM_SMOOTHNESS);
 		xAngleSmooth += (xAngle - xAngleSmooth) / (double)(AIM_SMOOTHNESS);
-		/*
-		 * check if there's a clear peak in
-		 * the y variance
-		 */
-		if (yDelta.size() < TRIGGER_QUEUE_SIZE) {
-			yDelta.push_back({ yAim, xAim });
-		}
-		else {
-			yDelta.pop_front();
-			yDelta.push_back({ yAim, xAim });
-			bool ok = true;
-			int peak = yDelta[TRIGGER_HALF_QUEUE_SIZE].first;
-			std::pair<int, int> left(-100, -100);
-			std::pair<int, int> right(-100, -100);
-			for (int j = 0; j < TRIGGER_HALF_QUEUE_SIZE && ok; ++j) {
-				std::pair<int, int> current = yDelta[j];
-				if (peak - current.first <= -TRIGGER_MINIMUM_DISTANCE_PIXELS) {
-					left = current;
-					break;
-				}
-				if (current.first > peak) {
-					ok = false;
-				}
-			}
-			for (int j = TRIGGER_HALF_QUEUE_SIZE + 1; j < TRIGGER_QUEUE_SIZE && ok; ++j) {
-				std::pair<int, int> current = yDelta[j];
-				if (peak - current.first <= -TRIGGER_MINIMUM_DISTANCE_PIXELS) {
-					right = current;
-					break;
-				}
-				if (current.first > peak) {
-					ok = false;
-				}
-			}
-			if (ok && left.first != -100 && right.first != -100) {
-				if (std::abs(left.first - right.first) <= TRIGGER_ALLOWED_Y_DEVIATION_PIXELS) {
-					if (std::abs(left.second - right.second) <= TRIGGER_ALLOWED_X_DEVIATION_PIXELS) {
-						triggered = true;
-						/*
-						 * clean y variance deque.
-						 * otherwise false positives will appear
-						 */
-						yDelta.clear();
-					}
-				}
-			}
-		}
-	}
-	else {
-		// clear y variance deque
-		yDelta.clear();
-	}
-
-	//                                   //
-	//-------- r e n d e r i n g --------//
-	//                                   //
-
-	if (RENDER_TO_FRAME) {
-		/*
+		/*Fyx
 		 * cut out everything outside of the
 		 * object boundaries
 		 */
@@ -270,6 +255,13 @@ void vaaac::update() {
 		mask(cv::Rect(xMin, 0, res - xMin, yMin)).setTo(cv::Scalar(0));
 		mask(cv::Rect(xMin, yMax, res - xMin, height - yMax)).setTo(cv::Scalar(0));
 		mask(cv::Rect(xMax, yMin, res - xMax, yMax - yMin)).setTo(cv::Scalar(0));
+	}
+
+	//                                   //
+	//-------- r e n d e r i n g --------//
+	//                                   //
+
+	if (RENDER_TO_FRAME) {
 		/*
 		 * draw rectangle indicating either
 		 * the reticle bounds or
@@ -281,6 +273,23 @@ void vaaac::update() {
 		 * point from origin
 		 */
 		cv::circle(frame, cv::Point(xAim, yAim), 5, cv::Scalar(255, 0, 255), 2);
+		// draw current angles
+		cv::putText(
+			frame,
+			"x angle: " + std::to_string(xAngle),
+			cv::Point(0, 20),
+			cv::FONT_HERSHEY_DUPLEX,
+			0.5,
+			cv::Scalar(255, 255, 255),
+			1);
+		cv::putText(
+			frame,
+			"y angle: " + std::to_string(yAngle),
+			cv::Point(0, 40),
+			cv::FONT_HERSHEY_DUPLEX,
+			0.5,
+			cv::Scalar(255, 255, 255),
+			1);
 		// convert mask to three channel
 		cv::cvtColor(mask, mask, cv::COLOR_GRAY2RGB);
 		// mix frame with mask
