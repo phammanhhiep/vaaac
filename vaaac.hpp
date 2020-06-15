@@ -283,7 +283,6 @@ class vaaac {
 			increment = true;
 			yxDeltaSize = 0;
 			yxDelta.clear();
-
 		}
 
 		~vaaac() {}
