@@ -7,6 +7,8 @@
 
 *__an opencv-based, header-only library capable of calculating the user's arm inclination angle and whether the user desires to trigger an action by doing a simple motion with their hand.__*
 
+[**_this is what you can do with vaaac_**](https://www.youtube.com/watch?v=YiGEf9hP55E)
+
 ## dependencies
 [OpenCV](https://opencv.org/).
 
@@ -15,19 +17,21 @@ the whole library is composed of a single header file, so a good starting point 
 ```cpp
 #include "vaaac.hpp"
 ```
-after that exhausting amount of work, i'd recommend drinking some refreshing beverage, and procceed to the next step; creating a vaaac object instance
+after that exhausting amount of work, i'd recommend drinking a refreshing beverage of your choice, and procceed to the next step; creating a vaaac object instance
 ```cpp
 vaaac* v = new vaaac();
 ```
-just to make sure that the object has been instantiated properly, we may check and let the user know in case something is off
+just to make sure that the object has been instantiated properly, we may check and let the user know. just in case something is off
 ```cpp
 if (!v->isOk()) {
   std::cout << "bad" << std::endl;
   delete v;
   return 1;
+} else {
+  std::cout << "good" << std::endl;
 }
 ```
-now that we know the user's computer is not going to explode, we may procceed to the main loop, where we should update the vaaac object for every frame, retrieve the current view angles, and check if the user has triggered an action
+now that we know the user's computer is not going to explode, we may procceed to the main loop, where we should update the vaaac object for every frame, check if the user's skin is detected (with the 'isDetected()' method), retrieve the current view angles, and check if the user has triggered an action, in that order
 ```cpp
 while (v->isOk()) {
   v->update();
