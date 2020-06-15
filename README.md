@@ -27,7 +27,7 @@ if (!v->isOk()) {
   return 1;
 }
 ```
-now that we know the user's pc is not going to explode, we may procceed to the main loop, where we should update the vaaac object for every frame, retrieve the current view angles, and check if the user has triggered an action
+now that we know the user's computer is not going to explode, we may procceed to the main loop, where we should update the vaaac object for every frame, retrieve the current view angles, and check if the user has triggered an action
 ```cpp
 while (v->isOk()) {
   v->update();
