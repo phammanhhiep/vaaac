@@ -404,9 +404,9 @@ class vaaac {
 					visited[x][y] = true;
 					if (cv::mean(mask(cv::Rect(x, y, BFS_SAMPLE_SIZE, BFS_SAMPLE_SIZE)))[0] == 0) continue;
 					/*
-					 * update furthermost point coordinates.
+					 * update aiming point coordinates.
 					 * works because the bfs algorithm always
-					 * visits the furthermost element in the
+					 * visits the farthermost element in the
 					 * last place
 					 */
 					xAim = x;
